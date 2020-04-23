@@ -2098,7 +2098,7 @@ div.tocify {
 <a class="sourceLine" id="cb19-268" title="268">                                    <span class="st">&quot;tsne_250_2&quot;</span>, <span class="st">&quot;tsne_250_3&quot;</span>, <span class="st">&quot;pca&quot;</span>, <span class="st">&quot;glrm&quot;</span>),</a>
 <a class="sourceLine" id="cb19-269" title="269">                          <span class="dt">max_auc =</span> max_auc,</a>
 <a class="sourceLine" id="cb19-270" title="270">                          <span class="dt">mean_auc =</span> mean_auc)</a></code></pre></div>
-<p>In the plot below we can see that the algorithms, with the exception of SVM, performed better using GLRM and PCA as methods of dimensionality reductions, with PCA being slightly better. However, the base chosen for the final model was the one originated by GLRM, given that the difference between both is low and that PCA is not the best method for a database composed of dummies:</p>
+<p>In the plot below we can see that the algorithms, with the exception of SVM, performed better using GLRM and PCA as methods of dimensionality reductions, with GLRM being slightly better. The data chosen for the final model was the one originated by GLRM, given the best performance and that PCA is not the best method for a database composed of dummies:</p>
 <div class="sourceCode" id="cb20"><pre class="sourceCode r"><code class="sourceCode r"><a class="sourceLine" id="cb20-1" title="1">glm_results <span class="op">%&gt;%</span></a>
 <a class="sourceLine" id="cb20-2" title="2"><span class="st">  </span><span class="kw">bind_rows</span>(svm_results) <span class="op">%&gt;%</span></a>
 <a class="sourceLine" id="cb20-3" title="3"><span class="st">  </span><span class="kw">bind_rows</span>(rda_results) <span class="op">%&gt;%</span></a>
@@ -2343,13 +2343,13 @@ LogitBoost
 bartMachine
 </td>
 <td style="text-align:right;">
-0.2726171
+0.2556266
 </td>
 <td style="text-align:right;">
-0.3415985
+0.3370679
 </td>
 <td style="text-align:right;">
--0.0689815
+-0.0814413
 </td>
 </tr>
 </tbody>
@@ -2958,7 +2958,7 @@ prob_svm
 <p>The plot shows the different choices of thresholds to create a test with greater sensitivity, greater specificity or more balanced. If the doctors’ decision is a more sensitive test, that is, that it predicts more accurately the cases that test positive for COVID, just choose a probability of 0.66 , for example. In this case, the algorithm will correctly predict 90% of patients who have COVID and will correctly predict only 29.4% of cases who do not have the disease. Therefore, the algorithm will be good for predicting who has the disease, but not for predicting who does not.</p>
 <p>However, if the objective is to develop a test that favors specificity, it is possible to choose a probability equivalent to 0.25. In this case, the algorithm will correctly predict 90.5% of the cases that do not have the disease and will correctly predict only 28.34% of the cases that have the disease.</p>
 <p>Finally, another possibility is not to favor specificity or sensitivity, but for a balanced test. If this is the objective, it is possible to choose a probability equivalent to 0.52. In this case, the algorithm will correctly predict 65.96% of the cases that have the disease and 65% of the cases that do not have the disease.</p>
-<p>In my opinion, thinking that the objective of the algorithm is to avoid overcrowding in hospitals, excess people taking exams (which takes more time) and more easily exclude patients who do not have the disease, I would choose the first strategy, that is , favor specificity so that the algorithm predict more accurately who does not have the disease, allowing doctors to release these people home. In this way, the problems mentioned above would be avoided.</p>
+<p>In my opinion, thinking that the objective of the algorithm is to avoid overcrowding in hospitals, excess people taking exams (which takes more time) and more easily exclude patients who do not have the disease, I would choose the second strategy, that is , favor specificity so that the algorithm predict more accurately who does not have the disease, allowing doctors to release these people home. In this way, the problems mentioned above would be avoided.</p>
 <p>The AUC of the final model in the test set was 0.69, a reasonable value given the limitations of the databases. The objective of this project has been achieved, given that the final model offers flexibility when developing the test design for those who will implement it. I believe that the performance of the algorithm may be better if more information about the patient is made available (sex, symptoms, whether the patient smokes or not, etc.) and if more observations are made available.</p>
 </div>
 
