@@ -2122,9 +2122,9 @@ div.tocify {
 <div id="trying-other-models" class="section level1">
 <h1><span class="header-section-number">7</span> Trying other models</h1>
 <p>Since the database was chosen, other algorithms were applied to the database produced by GLRM, to add other models that may be useful for our ensemble model. Ten models were selected (in addition to those that have already been applied previously) provided by the Caret package. default tunegrid from caret and 5 fold cross-validation was used:</p>
-<div class="sourceCode" id="cb21"><pre class="sourceCode r"><code class="sourceCode r"><a class="sourceLine" id="cb21-1" title="1">models &lt;-<span class="st"> </span><span class="kw">c</span>(<span class="st">&#39;dwdPoly&#39;</span>,<span class="st">&#39;AdaBoost.M1&#39;</span>, </a>
+<div class="sourceCode" id="cb21"><pre class="sourceCode r"><code class="sourceCode r"><a class="sourceLine" id="cb21-1" title="1">models &lt;-<span class="st"> </span><span class="kw">c</span>(<span class="st">&#39;bartMachine&#39;</span>,<span class="st">&#39;AdaBoost.M1&#39;</span>,<span class="st">&#39;adaboost&#39;</span>, </a>
 <a class="sourceLine" id="cb21-2" title="2">            <span class="st">&#39;AdaBag&#39;</span>, <span class="st">&#39;bagFDA&#39;</span>,</a>
-<a class="sourceLine" id="cb21-3" title="3">            <span class="st">&#39;gamboost&#39;</span>, <span class="st">&#39;glmboost&#39;</span>,</a>
+<a class="sourceLine" id="cb21-3" title="3">            <span class="st">&#39;gamboost&#39;</span>, </a>
 <a class="sourceLine" id="cb21-4" title="4">            <span class="st">&#39;LogitBoost&#39;</span>, <span class="st">&#39;blackboost&#39;</span>, <span class="st">&#39;C5.0&#39;</span>, </a>
 <a class="sourceLine" id="cb21-5" title="5">            <span class="st">&#39;cforest&#39;</span>)</a>
 <a class="sourceLine" id="cb21-6" title="6"></a>
@@ -2228,16 +2228,16 @@ cforest
 </tr>
 <tr>
 <td style="text-align:left;">
-dwdPoly
+adaboost
 </td>
 <td style="text-align:right;">
-0.6748337
+0.8361858
 </td>
 <td style="text-align:right;">
-0.6763299
+0.6758348
 </td>
 <td style="text-align:right;">
--0.0014962
+0.1603509
 </td>
 </tr>
 <tr>
@@ -2340,21 +2340,21 @@ LogitBoost
 </tr>
 <tr>
 <td style="text-align:left;">
-glmboost
+bartMachine
 </td>
 <td style="text-align:right;">
-0.6335970
+0.2726171
 </td>
 <td style="text-align:right;">
-0.6046162
+0.3415985
 </td>
 <td style="text-align:right;">
-0.0289808
+-0.0689815
 </td>
 </tr>
 </tbody>
 </table>
-<p>What is observed is that the first 2 models, despite presenting an excellent performance in the test set, have a great difference from the training set. The Logitboost model obtained a good performance (compared to the other models) and obtained little difference between the training and test set, the same goes for the gamboost, AdaBag, bagFDA, C5.0 and Blackboost models, so these models were selected to be used in the ensemble model.</p>
+<p>What is observed is that some models, despite presenting an excellent performance in the test set, have a great difference from the training set. I selected the models with a difference (in module) less than 0.05 and with a relatively good performance on test set. The Gamboost model obtained a good performance (compared to the other models) and obtained little difference between the training and test set the same goes for the AdaBag, bagFDA, C5.0, Blackboost and LogitBoost models, so these models were selected to be used in the ensemble model.</p>
 </div>
 <div id="applying-selected-models" class="section level1">
 <h1><span class="header-section-number">8</span> Applying selected models</h1>
