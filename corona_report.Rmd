@@ -1,0 +1,1340 @@
+---
+title: "A model to predict the result of the COVID exam"
+author: "Diego Liberato Souza"
+date: "21/04/2020"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+        number_sections: true
+        theme: spacelab  
+        highlight: zenburn
+        font-family: "Roboto" 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Objective
+
+The objective of this kernel is to develop a model to predict the results of the COVID exam, taking care of certain details that involve the design of medical examinations.The dataset used is available in [Kaggle](https://www.kaggle.com/einsteindata4u/covid19) and was made available by hospital Albert Einstein.
+
+# Strategy Used
+
+
+Throughout the analysis we will go through the details of the strategy used, but I would like to give an overview of what the steps were implemented:
+
+* **Dealing with missing data**: the strategy used to treat missing data does not involve deleting any columns, removing missing data or data inputation. This is because the missing data in this case are extremely important, as they indicate that the doctor has decided not to subject the patient to the exam, which is an interesting proxy related to both the symptoms and the patient's health status. The strategy used was to transform categorical variables into dummies (removing the dummie column referring to the missing values) and as for the numerical variables, they were transformed into discrete (broken into 5 quartiles) and then transformed into dummies as well. In this way, the information related to the absence of examination remains in the database, however a consequence of using these strategies is that the number of columns increases significantly;
+
+* **Dimensionality reduction**: I believe that the use of more than 100 columns, considering the number of observations that the database has, is a big problem. This type of approach can lead to the Curse of Dimensionality and that is not a good thing. To deal with this, dimensionality reduction techniques were used, and three models were used: PCA, t-SNE and GLRM. I recognize that PCA is not the appropriate method for a database full of dummies, the most appropriate would be MCA. However, PCA, 8 different t-SNE configurations (varying the perplexity hyperparameter and number of dimensions of the output) and the GLRM were applied.
+
+* **Model evaluation metrics**: The metric used to choose the database that the best models have adapted and also the models that will be used was the AUC. The choice of this metric is due to some reasons. The first is due to the fact that it is invariant to the chosen threshold, bringing a more general view of how the model performed considering different thresholds. Second, AUC provides valuable information when it comes to medical examinations, as it shows the tradeoff between sensitivity and specificity, enabling the choice of a more sensitive or specific test design according to the needs of those who develop such a test. In this way, by maximizing the AUC, it is possible to offer decision makers a model that gives greater flexibility in the design of the exam.
+
+* **Unbalanced classes**: Another problem present in the database in addition to the missing data and the large number of columns is the fact that the classes are unbalanced. To deal with this, the SMOTE method of oversampling was used during the model training.
+
+* **Ensemble model**: After choosing the dimensionality reduction method based on the performance of 5 distinct algorithms on data, more than 20 models were applied to find out which ones best fit the data without causing overfitting in the test set. The chosen models were placed in an ensemble model.
+
+# Loading packages and importing data
+
+
+
+```{r warning=FALSE, message=FALSE}
+
+library(openxlsx)
+library(fastDummies)
+library(tidyverse)
+library(Rtsne)
+library(Hmisc)
+library(factoextra)
+library(caret)
+library(permute)
+library(xgboost)
+library(h2o)
+library(stringi)
+library(FactoMineR)
+library(e1071)
+library(plotROC)
+library(ROCR)
+library(ggrepel)
+library(hrbrthemes)
+library(GGally)
+library(knitr)
+library(kableExtra)
+library(corrplot)
+
+
+
+
+```
+```{r echo=FALSE}
+
+setwd("C:/Users/diego/OneDrive/Área de Trabalho/corona_data")
+
+corona <- read.xlsx("dataset.xlsx")
+
+```
+
+
+# Data cleaning and manipulation
+
+The first thing I did was to separate the categorical variables from the numerical variables, since I treated them differently:
+
+```{r warning=FALSE, message=FALSE}
+
+non_numerical_corona <- corona[, !(names(corona) %in% names(corona %>% select_if(is.numeric)))]
+
+numerical_corona <- cbind(select(corona, Patient.ID), corona[, (names(corona) %in% names(corona %>% select_if(is.numeric)))])
+
+```
+
+## Categorical data
+
+I replaced every NA values by the label *"No exam"*:
+
+```{r warning=FALSE, message=FALSE}
+
+for (i in c(3:37)){
+  
+  non_numerical_corona[,i] <- ifelse(is.na(non_numerical_corona[,i]), "no exam", non_numerical_corona[,i])
+  
+}
+
+```
+
+The categorical data was transformed in dummies, and the first dummie of every categorial variable was removed:
+
+
+```{r warning=FALSE, message=FALSE}
+
+non_numerical_corona <- dummy_cols(non_numerical_corona, select_columns = colnames(non_numerical_corona)[3:37], remove_selected_columns = TRUE, remove_first_dummy = TRUE) 
+
+
+```
+`
+
+## Numerical data
+
+The numerical variables (those with sufficient information volume and variation) were broken down into 5 quartiles:
+
+
+```{r warning=FALSE, message=FALSE}
+
+for (i in c(6:30, 34:40, 42:44, 46, 51, 52,54:72, 74, 75)){
+  
+  quantiles <- quantile(numerical_corona[,i], prob = seq(0, 1, length = 5), type = 5, na.rm = TRUE)
+  numerical_corona[,i] <- cut(numerical_corona[,i], breaks = as.numeric(quantiles))
+  numerical_corona[,i] <- as.character(numerical_corona[,i])
+  
+  
+  
+}
+
+
+```
+
+
+Then the missing values were replaced by *"No exam"*:
+
+```{r warning=FALSE, message=FALSE}
+
+for (i in c(2:75)){
+  
+  numerical_corona[,i] <- ifelse(is.na(numerical_corona[,i]), "no exam", numerical_corona[,i])
+  
+}
+
+```
+
+
+Similar to what was done with categorical variables, numerical variables (now transformed into discrete ones) were transformed into dummies. The other numerical variables that were not broken into quartiles due to low variance (or low number of observations), were also transformed into dummies, since most of them repeated the same values for several observations:
+
+
+```{r warning=FALSE, message=FALSE}
+
+numerical_corona <- dummy_cols(numerical_corona, select_columns = colnames(numerical_corona)[6:75], remove_selected_columns = TRUE, remove_first_dummy = TRUE) 
+
+
+```
+
+
+I joined the numerical and categorical data, creating the final database that will be used in the dimensionality reduction, after that I exclude the intermediate databases used:
+
+
+```{r warning=FALSE, message=FALSE}
+
+corona_final <- left_join(non_numerical_corona, numerical_corona)
+
+
+rm(corona, numerical_corona, non_numerical_corona)
+
+```
+
+# Dimensionality Reduction
+
+
+After transforming all variables into dummies, there are a large number of variables available, we went from 111 variables to 444 variables. I believe that 111 variables is already a large number of variables for the number of observations that the database has, with 444 variables the best strategy is to use dimensionality reduction.
+
+## PCA
+
+
+The first method applied was PCA, however I recognize that this is not the most suitable method for a database full of dummies. My goal was to observe the performance of the algorithms using the principal components produced by the PCA and compare it with the other dimensionality reduction methods. 
+The PCA was applied and the variables were centralized:
+
+```{r warning=FALSE, message=FALSE}
+
+pca_output <- prcomp(corona_final[,-c(1,2)], center=TRUE, scale=FALSE)
+
+```
+
+The plot below shows the principal components and the percentage of variation explained by each one.
+
+```{r warning=FALSE, message=FALSE}
+
+fviz_eig(pca_output)
+
+```
+
+A dataset was created using the first 10 components, and the patient's label and id were joined to the data:
+
+```{r warning=FALSE, message=FALSE}
+
+pca_data <- data.frame(pca_output$x[,c(1:10)], corona_final %>% select(exam = `SARS-Cov-2.exam.result`, Patient.ID))
+
+rm(pca_output)
+
+```
+ 
+## TSNE
+
+
+I believe that the most difficult aspect to deal with tsne is the perplexity hyperparameter, which balance the attention between local and global aspects of the dataset. 
+The best way to inspect the best perplexity value is by testing multiple values and viewing plots to understand whether this perplexity value separated the data well in two dimensions. But before that, it is important to define the value of the number of interactions that will be used. For this, I applied a tsne model and plotted the total KL-Divergence Cost (which we want to minimize), over the iterations (each unit of the x-axis is measured in 50 interactions):
+
+```{r warning=FALSE, message=FALSE, eval = TRUE}
+
+set.seed(666)
+
+tsne <- Rtsne(corona_final[,-c(1,2)], check_duplicates = FALSE, max_iter = 1000)
+
+plot(tsne$itercosts, type = "l",  ylab="Total KL-Divergence Cost", xlab="Gradient Descent (Each 50 steps)")
+
+```
+
+
+It is observed that the number of optimal interactions is 300 (6 multiplied by 50), so we will use this value to test the different perplexities. 
+First, we will test perplexity values from 1 to 100, comparing how the observations are separated into different perplexity values:
+
+```{r warning=FALSE, eval = TRUE}
+
+par(mfrow=c(3,3))
+
+perplexity <- c(2, 5, 10, 30, 50, 70, 80, 90, 100)
+
+for (i in perplexity){
+  
+  set.seed(666)
+  
+  tsne <- Rtsne(corona_final[,-c(1,2)], check_duplicates = FALSE, max_iter = 300, perplexity = i)
+  
+  tsne_data <- data.frame(tsne$Y,
+                          corona_final %>%
+                            select(exam = `SARS-Cov-2.exam.result`)) %>%
+    mutate(color = ifelse(exam == "positive","Red", "Blue"))
+  
+    plot(tsne_data$X1, tsne_data$X2, col = tsne_data$color, xlab = "X1", ylab = "X2", 
+       main = paste("Perplexity:", i))
+  
+}
+
+
+```
+
+After that, we will test perplexity values from 150 to 550, comparing how the observations are separated into different perplexity values:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+par(mfrow=c(3,3))
+
+perplexity <- c( 150, 200, 250, 300, 350, 400, 450, 500, 550)
+
+for (i in perplexity){
+  
+  set.seed(666)
+  
+  tsne <- Rtsne(corona_final[,-c(1,2)], check_duplicates = FALSE, max_iter = 300, perplexity = i)
+  
+  tsne_data <- data.frame(tsne$Y,
+                          corona_final %>%
+                            select(exam = `SARS-Cov-2.exam.result`)) %>%
+    mutate(color = ifelse(exam == "positive","Red", "Blue"))
+  
+  plot(tsne_data$X1, tsne_data$X2, col = tsne_data$color, xlab = "X1", ylab = "X2", 
+       main = paste("Perplexity:", i))
+  
+}
+
+
+rm(perplexity)
+
+
+```
+
+Visually, data tends to become more crowded in cases where perplexity is low (less than 70) or high (greater than 300). Thus, deciding to test 4 different perplexities values: 100,150, 200 and 250. I produced databases from the 2-dimensional and 3-dimensional tsne, making 8 configurations of applied tsne and 8 databases to test the algorithms:
+
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+dim_red_data <- list()
+
+for (i in c(100, 150, 200, 250)){
+  
+  for (j in c(2,3)){
+    
+    set.seed(666)
+    
+    tsne <- Rtsne(corona_final[,-c(1,2)], check_duplicates = FALSE, max_iter = 300, perplexity = i, dims = j)
+    
+    
+    tsne_result <- data.frame(tsne$Y,
+                                    corona_final %>%
+                                      select(exam = `SARS-Cov-2.exam.result`,
+                                             Patient.ID))
+    
+    dim_red_data <- append(dim_red_data, list(tsne_result))
+    
+    
+  }
+  
+  
+}
+
+
+```
+
+
+## GLRM
+
+
+The third Dimensionality Reduction model I applied was GLRM, and I chose the value of 10 for the hyperparameter k of the model, reducing the data to 10 dimensions. I had to change the name of the columns to random names, because the h2o.glrm function had problems with the variable names. At the end, I created a database with the GLRM results and merged the patient ID information and the exam result:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE, results = 'hide'}
+
+# - Initiating H2O
+
+h2o.init()
+
+# - Selecting data to dimensionality reduction
+
+glrm_adjusted <- corona_final[,-c(1,2)]
+
+# - Changing colnames to avoid problems in the algorithm
+
+colnames(glrm_adjusted) <- stringi::stri_rand_strings(442,4)
+
+# - Transfering data to h2o
+
+corona_final.hex <- as.h2o(glrm_adjusted, "corona_final.hex")
+
+# - Applyng GLRM model
+
+
+model_glrm <- h2o.glrm(training_frame = corona_final.hex,
+                       cols = 1:ncol(glrm_adjusted), k = 10,
+                       max_iterations = 1000, seed = 666)
+
+
+
+# - Creating data with glrm results
+
+
+glrm_data <- cbind(as.data.frame(h2o.getFrame(model_glrm@model$representation_name)), 
+                   corona_final %>% select(exam = `SARS-Cov-2.exam.result`, Patient.ID))
+
+
+```
+
+
+Together with the list containing the data resulting from the TSNE, I have added the data from the PCA and GLRM to the list:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+# - Bringing glrm data and pca data to tsne datas
+
+dim_red_data <- append(dim_red_data, list(pca_data))
+dim_red_data <- append(dim_red_data, list(glrm_data))
+
+# Removing dataframes that we will not use
+
+rm(corona_final.hex, glrm_adjusted, glrm_data, model_glrm, pca_data, tsne, tsne_result)
+
+
+
+```
+
+
+
+
+# Selecting the best data
+
+To select the dimensionality reduction method to be used, 5 different algorithms were applied to all available databases. The choice of these algorithms was not careful, but it sought to bring a diversity in the way these algorithms relate input to output, whether using techniques such as maximum likelihood, boosting, distance between observations, etc. The following algorithms were applied: Adaboost (ada), Logistic Regression (glmnet), Regularized Discriminant Analysis (rda), KNN (knn) and SVM (svm). For all models, scale and center were applied in pre-processing, 5-fold cross validation was used, oversampling was applied (using the SMOTE method) and hyperparamenter tuning was performed (some models with the grid already defined by the caret package and others customized). 
+From the application of each algorithm in each of the databases, the maximum AUC that the algorithm obtained during hyperparameter tuning and the average AUC were calculated.
+The code below shows the application of all selected algorithms in each of the databases:
+
+
+```{r warning=FALSE, message=FALSE, eval=TRUE, results = 'hide'}
+
+# ADABOOST
+
+max_auc <- c()
+mean_auc <- c()
+
+for (i in 1:10){
+
+# Create training and test data
+
+data <- data.frame(dim_red_data[i])
+
+set.seed(666)
+trainRowNumbers <- createDataPartition(shuffle(data$exam), p=0.80, list=FALSE)
+
+# Create the training  dataset
+
+train <- data[trainRowNumbers,]
+
+# Create the test dataset
+
+test <- data[-trainRowNumbers,] 
+
+set.seed(666)
+
+model <- train(
+  exam ~ ., train %>% select(-Patient.ID),
+  method = "ada",
+  preProcess = c("scale", "center"),
+  trControl = trainControl(
+    method = "cv",
+    search = "grid",
+    number = 5,
+    verboseIter = TRUE,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "smote"
+  ),
+  metric = 'ROC')
+
+
+
+max_auc <- c(max_auc, max(model$results$ROC))
+mean_auc <- c(mean_auc, mean(model$results$ROC))
+
+}
+
+adaboost_results <- data.frame(alg = rep("adaboost", 10),
+           model = c("tsne_100_2", "tsne_100_3", "tsne_150_2", "tsne_150_3", "tsne_200_2", "tsne_200_3",
+                     "tsne_250_2", "tsne_250_3", "pca", "glrm"),
+           max_auc = max_auc,
+           mean_auc = mean_auc)
+
+
+
+# GLM
+
+max_auc <- c()
+mean_auc <- c()
+
+for (i in 1:10){
+  
+  # Create training and test data
+  
+  data <- data.frame(dim_red_data[i])
+  
+  set.seed(666)
+  trainRowNumbers <- createDataPartition(shuffle(data$exam), p=0.80, list=FALSE)
+  
+  # Create the training  dataset
+  
+  train <- data[trainRowNumbers,]
+  
+  # Create the test dataset
+  
+  test <- data[-trainRowNumbers,] 
+  
+  set.seed(666)
+  
+  model <- train(
+    exam ~ ., train %>% select(-Patient.ID),
+    method = "glmnet",
+    preProcess = c("scale", "center"),
+    trControl = trainControl(
+      method = "cv",
+      search = "grid",
+      number = 5,
+      verboseIter = TRUE,
+      classProbs = TRUE,
+      summaryFunction = twoClassSummary,
+      sampling = "smote"
+    ),
+    metric = 'ROC')
+  
+  
+  
+  max_auc <- c(max_auc, max(model$results$ROC))
+  mean_auc <- c(mean_auc, mean(model$results$ROC))
+  
+}
+
+glm_results <- data.frame(alg = rep("glm", 10),
+                              model = c("tsne_100_2", "tsne_100_3", "tsne_150_2", "tsne_150_3", "tsne_200_2", "tsne_200_3",
+                                        "tsne_250_2", "tsne_250_3", "pca", "glrm"),
+                              max_auc = max_auc,
+                              mean_auc = mean_auc)
+
+
+
+# Discriminant Analysis
+
+max_auc <- c()
+mean_auc <- c()
+
+for (i in 1:10){
+  
+  # Create training and test data
+  
+  data <- data.frame(dim_red_data[i])
+  
+  set.seed(666)
+  trainRowNumbers <- createDataPartition(shuffle(data$exam), p=0.80, list=FALSE)
+  
+  # Create the training  dataset
+  
+  train <- data[trainRowNumbers,]
+  
+  # Create the test dataset
+  
+  test <- data[-trainRowNumbers,] 
+  
+  set.seed(666)
+  
+  model <- train(
+    exam ~ ., train %>% select(-Patient.ID),
+    method = "rda",
+    preProcess = c("scale", "center"),
+    trControl = trainControl(
+      method = "cv",
+      search = "grid",
+      number = 5,
+      verboseIter = TRUE,
+      classProbs = TRUE,
+      summaryFunction = twoClassSummary,
+      sampling = "smote"
+    ),
+    metric = 'ROC')
+  
+  
+  
+  max_auc <- c(max_auc, max(model$results$ROC))
+  mean_auc <- c(mean_auc, mean(model$results$ROC))
+  
+}
+
+rda_results <- data.frame(alg = rep("rda", 10),
+                          model = c("tsne_100_2", "tsne_100_3", "tsne_150_2", "tsne_150_3", "tsne_200_2", "tsne_200_3",
+                                    "tsne_250_2", "tsne_250_3", "pca", "glrm"),
+                          max_auc = max_auc,
+                          mean_auc = mean_auc)
+
+
+
+
+# KNN
+
+max_auc <- c()
+mean_auc <- c()
+
+for (i in 1:10){
+  
+  # Create training and test data
+  
+  data <- data.frame(dim_red_data[i])
+  
+  set.seed(666)
+  trainRowNumbers <- createDataPartition(shuffle(data$exam), p=0.80, list=FALSE)
+  
+  # Create the training  dataset
+  
+  train <- data[trainRowNumbers,]
+  
+  # Create the test dataset
+  
+  test <- data[-trainRowNumbers,] 
+  
+  set.seed(666)
+  
+  model <- train(
+    exam ~ ., train %>% select(-Patient.ID),
+    method = "knn",
+    preProcess = c("scale", "center"),
+    trControl = trainControl(
+      method = "cv",
+      search = "grid",
+      number = 5,
+      verboseIter = TRUE,
+      classProbs = TRUE,
+      summaryFunction = twoClassSummary,
+      sampling = "smote"
+    ),
+    metric = 'ROC')
+  
+  
+  
+  max_auc <- c(max_auc, max(model$results$ROC))
+  mean_auc <- c(mean_auc, mean(model$results$ROC))
+  
+}
+
+knn_results <- data.frame(alg = rep("knn", 10),
+                               model = c("tsne_100_2", "tsne_100_3", "tsne_150_2", "tsne_150_3", "tsne_200_2", "tsne_200_3",
+                                         "tsne_250_2", "tsne_250_3", "pca", "glrm"),
+                               max_auc = max_auc,
+                               mean_auc = mean_auc)
+
+
+
+
+
+# SVM
+
+max_auc <- c()
+mean_auc <- c()
+
+for (i in 1:10){
+  
+  # Create training and test data
+  
+  data <- data.frame(dim_red_data[i])
+  
+  set.seed(666)
+  trainRowNumbers <- createDataPartition(shuffle(data$exam), p=0.80, list=FALSE)
+  
+  # Create the training  dataset
+  
+  train <- data[trainRowNumbers,]
+  
+  # Create the test dataset
+  
+  test <- data[-trainRowNumbers,] 
+  
+  set.seed(666)
+  
+  model <- train(
+    exam ~ ., train %>% select(-Patient.ID),
+    method = "svmRadial",
+    preProcess = c("scale", "center"),
+    trControl = trainControl(
+      method = "cv",
+      search = "grid",
+      number = 5,
+      verboseIter = TRUE,
+      classProbs = TRUE,
+      summaryFunction = twoClassSummary,
+      sampling = "smote"
+    ),
+    metric = 'ROC')
+  
+  
+  
+  max_auc <- c(max_auc, max(model$results$ROC))
+  mean_auc <- c(mean_auc, mean(model$results$ROC))
+  
+}
+
+svm_results <- data.frame(alg = rep("svm", 10),
+                          model = c("tsne_100_2", "tsne_100_3", "tsne_150_2", "tsne_150_3", "tsne_200_2", "tsne_200_3",
+                                    "tsne_250_2", "tsne_250_3", "pca", "glrm"),
+                          max_auc = max_auc,
+                          mean_auc = mean_auc)
+
+
+
+```
+
+
+
+
+In the plot below we can see that the algorithms, with the exception of SVM, performed better using GLRM and PCA as methods of dimensionality reductions, with PCA being slightly better. However, the base chosen for the final model was the one originated by GLRM, given that the difference between both is low and that PCA is not the best method for a database composed of dummies:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+
+glm_results %>%
+  bind_rows(svm_results) %>%
+  bind_rows(rda_results) %>%
+  bind_rows(adaboost_results) %>%
+  bind_rows(knn_results) %>%
+  select(-max_auc) %>%
+  spread(key = alg, value = mean_auc) %>%
+  ggparcoord(columns = 2:6, groupColumn = 1, order = "anyClass",
+             showPoints = TRUE, 
+             title = "Scaled AUC by model",
+             alphaLines = 1
+  ) + 
+  scale_color_manual(values=c( "#69b3a2", "#2E9AFE",rep("#E8E8E8", 8)) ) +
+  theme_ipsum(base_size = 14)+
+  theme(
+    plot.title = element_text(size=10)
+  ) +
+  xlab("algorithm") + ylab("scaled auc")
+
+
+
+
+```
+
+
+# Trying other models
+
+Since the database was chosen, other algorithms were applied to the database produced by GLRM, to add other models that may be useful for our ensemble model. Ten models were selected (in addition to those that have already been applied previously) provided by the Caret package. default tunegrid from caret and 5 fold cross-validation was used:
+
+
+
+```{r warning=FALSE, message=FALSE, eval=TRUE, results = 'hide'}
+
+models <- c('dwdPoly','AdaBoost.M1', 
+            'AdaBag', 'bagFDA',
+            'gamboost', 'glmboost',
+            'LogitBoost', 'blackboost', 'C5.0', 
+            'cforest')
+
+data <- data.frame(dim_red_data[10])[,-12]
+
+  set.seed(666)
+  
+  trainRowNumbers <- createDataPartition(shuffle(data$exam), p=0.80, list=FALSE)
+  
+  # Create the training  dataset
+  
+  train <- data[trainRowNumbers,]
+  
+  # Create the test dataset
+  
+  test <- data[-trainRowNumbers,] 
+
+train_fix <- train
+
+overfit_data <- data.frame(model = "x",
+                           train = 1,
+                           test = 1)
+
+for (model_name in models){
+  
+  set.seed(666)
+  
+  model <- train(
+    exam ~ ., train_fix ,
+    method = model_name,
+    preProcess = c("scale", "center"),
+    trControl = trainControl(
+      method = "cv",
+      search = "grid",
+      number = 5,
+      verboseIter = TRUE,
+      classProbs = TRUE,
+      summaryFunction = twoClassSummary,
+      sampling = "smote"
+    ),
+    metric = 'ROC')
+  
+  test$prob <- caret::predict.train(model, test, type = "prob")[,2]
+  train$prob <- caret::predict.train(model, train, type = "prob")[,2]
+  
+  
+  pred <- prediction(test$prob, test$exam)
+  perf <- performance(pred,"auc")
+  test_perf<-  perf@y.values[[1]]
+  
+  pred <- prediction(train$prob, train$exam)
+  perf <- performance(pred,"auc")
+  train_perf<- perf@y.values[[1]]
+  
+  overfit_data <- rbind(overfit_data, c(model_name, train_perf, test_perf))
+  
+}
+
+overfit_data <- overfit_data[-1,]
+overfit_data$model <- models
+
+overfit_data <- overfit_data %>%
+  mutate(train = as.numeric(train),
+         test = as.numeric(test),
+         dif = train - test)
+
+
+
+
+
+```
+
+
+The table below shows the AUC values in the training and test set, plus a column of the difference between the AUC in training with the AUC in the test set. The table is ordered from the highest AUC value in the test set to the lowest:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+kable(overfit_data %>%
+  arrange(desc(test))) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+```
+
+What is observed is that the first 2 models, despite presenting an excellent performance in the test set, have a great difference from the training set. The Logitboost model obtained a good performance (compared to the other models) and obtained little difference between the training and test set, the same goes for the gamboost, AdaBag, bagFDA, C5.0 and Blackboost models, so these models were selected to be used in the ensemble model.
+
+# Applying selected models
+
+
+First, the database was separated again in training and testing (using the same seed as the previous applications):
+
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+# Create training and test data
+
+data <- data.frame(dim_red_data[10])[,-12]
+
+set.seed(666)
+trainRowNumbers <- createDataPartition(shuffle(data$exam), p=0.80, list=FALSE)
+
+# Create the training  dataset
+
+train <- data[trainRowNumbers,]
+
+# Create the test dataset
+
+test <- data[-trainRowNumbers,] 
+
+
+```
+
+Finally, given that the database was chosen (GLRM) and the models as well, the models were applied to the training set, all of which were applied with 5 fold cross validation, with pre-processing of the data (scale and center) , using oversampling (SMOTE), optimizing the AUC metric and in some models the default tunegrid was used and in other models a custom tunegrid was used:
+
+```{r eval=TRUE, message=FALSE, warning=FALSE, results = 'hide'}
+
+# bagFDA
+
+
+
+set.seed(666)
+
+bagFDA_model <- train(
+  exam ~ ., train ,
+  method = "bagFDA",
+  preProcess = c("scale", "center"),
+  trControl = trainControl(
+    method = "cv",
+    search = "grid",
+    number = 5,
+    verboseIter = TRUE,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "smote"
+  ),
+  metric = 'ROC')
+
+# Adabag
+
+
+
+set.seed(666)
+
+adabag_model <- train(
+  exam ~ ., train ,
+  method = "AdaBag",
+  preProcess = c("scale", "center"),
+  trControl = trainControl(
+    method = "cv",
+    search = "grid",
+    number = 5,
+    verboseIter = TRUE,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "smote"
+  ),
+  metric = 'ROC')
+
+# C50
+
+
+
+set.seed(666)
+
+C5_model <- train(
+  exam ~ ., train ,
+  method = "C5.0",
+  preProcess = c("scale", "center"),
+  trControl = trainControl(
+    method = "cv",
+    search = "grid",
+    number = 5,
+    verboseIter = TRUE,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "smote"
+  ),
+  metric = 'ROC')
+
+
+
+
+# GAMBOOST
+
+
+
+set.seed(666)
+
+gamboost_model <- train(
+  exam ~ ., train ,
+  method = "gamboost",
+  preProcess = c("scale", "center"),
+  trControl = trainControl(
+    method = "cv",
+    search = "grid",
+    number = 5,
+    verboseIter = TRUE,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "smote"
+  ),
+  metric = 'ROC')
+
+# RDA
+
+tuneGrid <- expand.grid(
+  lambda = seq(0, 1, 0.1),
+  gamma = seq(0, 1, 0.1))
+
+
+set.seed(666)
+
+rda_model <- train(
+  exam ~ ., train ,
+  method = "rda",
+  preProcess = c("scale", "center"),
+  trControl = trainControl(
+    method = "cv",
+    search = "grid",
+    number = 5,
+    verboseIter = TRUE,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "smote"
+  ),
+  tuneGrid = tuneGrid,
+  metric = 'ROC')
+
+# Logit boost estimation
+
+
+set.seed(666)
+
+logit_model <- train(
+  exam ~ ., train ,
+  method = "LogitBoost",
+  preProcess = c("scale", "center"),
+  trControl = trainControl(
+    method = "cv",
+    search = "grid",
+    number = 5,
+    verboseIter = TRUE,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "smote"
+  ),
+  metric = 'ROC')
+
+# Ada estimation
+
+
+set.seed(666)
+
+ada_model <- train(
+  exam ~ ., train ,
+  method = "ada",
+  preProcess = c("scale", "center"),
+  trControl = trainControl(
+    method = "cv",
+    search = "grid",
+    number = 5,
+    verboseIter = TRUE,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "smote"
+  ),
+  metric = 'ROC')
+
+# Blackboost estimation
+
+set.seed(666)
+
+blackboost_model <- train(
+  exam ~ ., train ,
+  method = "blackboost",
+  preProcess = c("scale", "center"),
+  trControl = trainControl(
+    method = "cv",
+    search = "grid",
+    number = 5,
+    verboseIter = TRUE,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "smote"
+  ),
+  metric = 'ROC')
+
+
+# GLM
+
+tuneGrid <- expand.grid(
+  lambda = seq(0, 1, 0.01),
+  alpha = seq(0, 1, 0.1))
+
+
+set.seed(666)
+
+glm_model <- train(
+  exam ~ ., train ,
+  method = "glmnet",
+  preProcess = c("scale", "center"),
+  trControl = trainControl(
+    method = "cv",
+    search = "grid",
+    number = 5,
+    verboseIter = TRUE,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "smote"
+  ),
+  tuneGrid = tuneGrid,
+  metric = 'ROC')
+
+# KNN
+
+tuneGrid <- expand.grid(
+  k = c(1:70))
+
+
+set.seed(666)
+
+knn_model <- train(
+  exam ~ ., train ,
+  method = "knn",
+  preProcess = c("scale", "center"),
+  trControl = trainControl(
+    method = "cv",
+    search = "grid",
+    number = 5,
+    verboseIter = TRUE,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "smote"
+  ),
+  tuneGrid = tuneGrid,
+  metric = 'ROC')
+
+# svm
+
+set.seed(666)
+
+svm_model <- train(
+  exam ~ ., train,
+  method = "svmRadial",
+  preProcess = c("scale", "center"),
+  trControl = trainControl(
+    method = "cv",
+    search = "grid",
+    number = 5,
+    verboseIter = TRUE,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "smote"
+  ),
+  metric = 'ROC')
+
+
+
+
+```
+
+
+Then, the models were used to predict probabilities in both the training set and the test set, so that these probabilities can be used in the final model as input:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+# Bringing the probabilities
+
+# - Test
+
+test$prob_logit <- caret::predict.train(logit_model, test, type = "prob")[,2]
+test$prob_knn <- caret::predict.train(knn_model, test, type = "prob")[,2]
+test$prob_glm <- caret::predict.train(glm_model, test, type = "prob")[,2]
+test$prob_rda <- caret::predict.train(rda_model, test, type = "prob")[,2]
+test$prob_ada <- caret::predict.train(ada_model, test, type = "prob")[,2]
+test$prob_blackboost <- caret::predict.train(blackboost_model, test, type = "prob")[,2]
+test$prob_bagfda <- caret::predict.train(bagFDA_model, test, type = "prob")[,2]
+test$prob_gamboost <- caret::predict.train(gamboost_model, test, type = "prob")[,2]
+test$prob_svm <- caret::predict.train(svm_model, test, type = "prob")[,2]
+test$prob_c50 <- caret::predict.train(C5_model, test, type = "prob")[,2]
+test$prob_adabag <- caret::predict.train(adabag_model, test, type = "prob")[,2]
+
+
+# - Train
+
+train$prob_logit <- caret::predict.train(logit_model, train, type = "prob")[,2]
+train$prob_knn <- caret::predict.train(knn_model, train, type = "prob")[,2]
+train$prob_glm <- caret::predict.train(glm_model, train, type = "prob")[,2]
+train$prob_rda <- caret::predict.train(rda_model, train, type = "prob")[,2]
+train$prob_ada <- caret::predict.train(ada_model, train, type = "prob")[,2]
+train$prob_blackboost <- caret::predict.train(blackboost_model, train, type = "prob")[,2]
+train$prob_bagfda <- caret::predict.train(bagFDA_model, train, type = "prob")[,2]
+train$prob_gamboost <- caret::predict.train(gamboost_model, train, type = "prob")[,2]
+train$prob_svm <- caret::predict.train(svm_model, train, type = "prob")[,2]
+train$prob_c50 <- caret::predict.train(C5_model, train, type = "prob")[,2]
+train$prob_adabag <- caret::predict.train(adabag_model, train, type = "prob")[,2]
+
+
+```
+
+
+The AUC for each of the models in the training set and test set was calculated:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+
+train_perf <- c()
+test_perf <- c()
+
+for (i in c(12:22)){
+  
+  
+  pred <- prediction(test[,i], test$exam)
+  perf <- performance(pred,"auc")
+  test_perf<- c(test_perf, perf@y.values[[1]])
+  
+  pred <- prediction(train[,i], train$exam)
+  perf <- performance(pred,"auc")
+  train_perf<- c(train_perf, perf@y.values[[1]])
+  
+  
+  
+}
+
+overfit <- data.frame(model = colnames(test[,c(12:22)]),
+                      train = train_perf,
+                      test = test_perf)
+
+
+overfit <- overfit %>%
+  mutate(dif = test - train)
+
+
+```
+
+The table below shows the difference in AUC between training and testing of this application of the algorithms:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+kable(overfit %>%
+  arrange(desc(dif))) %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+
+```
+
+What is observed is that the model with the worst performance in the test set and with the greatest difference between training and test was the SVM, so this model was not used in the ensemble model.
+
+# Ensemble model
+
+Finally, to create the final model, a new set of training and testing was created using the probabilities estimated by the algorithms:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+# - Creating new train and test data
+
+ensemble_train <- train[,c(11, 12:19, 21, 22)]
+ensemble_test <- test[,c(11, 12:19, 21, 22)]
+
+
+```
+
+
+One of the things expected and observed in the database is that the features of the model are highly correlated, as can be seen in the plot below:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+cor_matrix <- cor(ensemble_train[,-1])
+corrplot(cor_matrix, method = "shade", type = "lower", tl.col = '#424242', tl.srt = 45,
+         addCoef.col = "black", tl.cex = 0.7, number.cex = 0.7)
+
+
+```
+
+Given the high correlation, I decided not to use parametric algorithms with different assumptions related to distribution, multicollinearity, etc. In this way, I opted for a non-parametric algorithm that will not have serious problems with multicollinearity: knn.
+The model was applied using the same tunegrid as the previous knn application and the same configuration as the other algorithm applications:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE, results = 'hide'}
+
+tuneGrid <- expand.grid(
+  k = c(1:70))
+
+set.seed(666)
+
+ensemble_model <- train(
+  exam ~ ., ensemble_train ,
+  method = "knn",
+  preProcess = c("scale", "center"),
+  trControl = trainControl(
+    method = "cv",
+    search = "grid",
+    number = 5,
+    verboseIter = TRUE,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "smote"
+  ),
+  tuneGrid = tuneGrid,
+  metric = 'ROC')
+
+
+
+```
+
+The plot below shows the AUC according to each K value during training, where the maximum value of AUC is 0.7253, with k = 67:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+# - Hyperparamenter results plot
+
+plot(ensemble_model)
+
+```
+
+Then, the Ensemble Model already trained was applied to the test set:
+
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+
+ensemble_test$prediction <- caret::predict.train(ensemble_model, test, type = "prob")[,2]
+ensemble_train$prediction <- caret::predict.train(ensemble_model, train, type = "prob")[,2]
+
+
+```
+
+The plot below shows the distribution of probabilities estimated by the algorithms in the test set colored by the labels, in order to observe how well the algorithm managed to separate the two distributions:
+
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+# - ROC Curve
+
+
+ggplot(ensemble_test, aes(x = prediction, fill = exam)) + geom_density(alpha = 0.3) + theme_bw(base_size = 14)
+
+
+```
+
+Visually, the model separated the two labels relatively well, but to validate this we will use the AUC, in addition to being useful to observe if there was overfitting. The plot below shows the ROC curve:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+# - ROC Curve
+
+
+rocplot <- ggplot(ensemble_test, aes(m = prediction, d = exam))+ geom_roc(n.cuts=20,labels=FALSE)
+rocplot + style_roc(theme = theme_grey) + geom_rocci(fill="pink") + theme_classic()
+
+```
+
+
+It is possible to observe in the code below that the AUC in the test set is 0.7012:
+
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+# - ROC Value
+
+
+pred <- prediction(ensemble_test$prediction, ensemble_test$exam)
+perf <- performance(pred,"auc")
+
+perf@y.values
+
+
+```
+
+Comparing the result with the results obtained by the other Kernels in Kaggle, it is an interesting result, mainly considering the number of observations we have, the imbalance of the database and mainly the missing information from the data, such as gender information, symptoms etc. In addition, the difference in AUC between training and testing was low, indicating a good generalizability of the model.
+
+
+
+# Conclusion
+
+
+Using the predictions in the test set, the metrics of accuracy, sensitivity and specificity were calculated for each of the different thresholds from 0 to 1:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+# - Tradeoff between specificity and sensitivity
+
+specificity <- c()
+sensitivity <- c()
+accuracy <- c()
+
+for (i in seq(0.1,0.9,0.01)){
+  
+  test <- ensemble_test %>%
+    mutate(class = ifelse(prediction > i, "positive", "negative"))
+  
+  conf <- table(test$exam, test$class)
+  
+  conf
+  
+  conf[1,1]/sum(conf[1,])
+  
+  specificity <- c(specificity, conf[2,2]/sum(conf[2,]))
+  sensitivity <- c(sensitivity, conf[1,1]/sum(conf[1,]))
+  accuracy <- c(accuracy, (conf[1,1] + conf[2,2])/sum(conf))
+}
+
+data <- data.frame(prob = seq(0.1,0.9,0.01),
+                   sensitivity = sensitivity,
+                   specificity = specificity,
+                   accuracy = accuracy)
+
+
+
+data <- data %>%
+  gather(key = "metric", value = "value", -prob)
+
+```
+
+
+The plot below shows the different values of accuracy, sensitivity and specificity calculated for different values of probabilities up to 0.9:
+
+```{r warning=FALSE, message=FALSE, eval=TRUE}
+
+ggplot(data, aes(x = prob, y = value, color = metric)) + geom_line(size = 0.8) +
+  theme_bw(base_size = 14) + scale_x_continuous(breaks = seq(0,1,0.1)) +
+  labs(x = "probability", y = "value")
+
+```
+
+
+
+The plot shows the different choices of thresholds to create a test with greater sensitivity, greater specificity or more balanced. If the doctors' decision is a more sensitive test, that is, that it predicts more accurately the cases that test positive for COVID, just choose a probability of 0.66 , for example. In this case, the algorithm will correctly predict 90% of patients who have COVID and will correctly predict only 29.4% of cases who do not have the disease. Therefore, the algorithm will be good for predicting who has the disease, but not for predicting who does not.
+
+
+However, if the objective is to develop a test that favors specificity, it is possible to choose a probability equivalent to 0.25. In this case, the algorithm will correctly predict 90.5% of the cases that do not have the disease and will correctly predict only 28.34% of the cases that have the disease.
+
+Finally, another possibility is not to favor specificity or sensitivity, but for a balanced test. If this is the objective, it is possible to choose a probability equivalent to 0.52. In this case, the algorithm will correctly predict 65.96% of the cases that have the disease and 65% of the cases that do not have the disease.
+
+In my opinion, thinking that the objective of the algorithm is to avoid overcrowding in hospitals, excess people taking exams (which takes more time) and more easily exclude patients who do not have the disease, I would choose the first strategy, that is , favor specificity so that the algorithm predict more accurately who does not have the disease, allowing doctors to release these people home. In this way, the problems mentioned above would be avoided.
+
+The AUC of the final model in the test set was 0.69, a reasonable value given the limitations of the databases. The objective of this project has been achieved, given that the final model offers flexibility when developing the test design for those who will implement it. I believe that the performance of the algorithm may be better if more information about the patient is made available (sex, symptoms, whether the patient smokes or not, etc.) and if more observations are made available.
